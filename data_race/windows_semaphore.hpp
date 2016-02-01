@@ -1,5 +1,5 @@
 #pragma once
-#include "simple_semaphore.hpp"
+
 #include <Windows.h>
 
 namespace win32

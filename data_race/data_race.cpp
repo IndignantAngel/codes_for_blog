@@ -1,7 +1,7 @@
 #include <thread>
 #include <cstdlib>
 #include <atomic>
-#include "windows_semaphore.hpp"
+#include "semaphore.hpp"
 
 int main(void)
 {
@@ -11,7 +11,8 @@ int main(void)
 	semaphore_type sema_2{ 1 };
 	semaphore_type end_sema{ 2 };
 
-	int x, y, r1, r2;
+	//int x, y, r1, r2;
+	std::atomic<int> x, y, r1, r2;
 
 	std::thread t1
 	{
@@ -21,31 +22,35 @@ int main(void)
 			{
 				sema_1.wait();
 				while (std::rand() % 8 != 0);
-				x = 1;
-				//std::atomic_thread_fence(std::memory_order_seq_cst);
-				std::atomic_signal_fence(std::memory_order_seq_cst);
-				r1 = y;
+
+				// transaction thread 2
+				x.store(1);
+				r1.store(y.load());
+				///////////////////////
+
 				end_sema.signal();
 			}
 		}
 	};
 
-	std::thread t2
+std::thread t2
+{
+	[&]()
 	{
-		[&]()
+		while (true)
 		{
-			while (true)
-			{
-				sema_2.wait();
-				while (std::rand() % 8 != 0);
-				y = 1;
-				//std::atomic_thread_fence(std::memory_order_seq_cst);
-				std::atomic_signal_fence(std::memory_order_seq_cst);
-				r2 = x;
-				end_sema.signal();
-			}
+			sema_2.wait();
+			while (std::rand() % 8 != 0);
+
+			// transaction thread 2
+			y.store(1);
+			r2.store(x.load());
+			///////////////////////
+
+			end_sema.signal();
 		}
-	};
+	}
+};
 
 	int detected = 0;
 	for (auto iterations = 0; ; ++iterations)

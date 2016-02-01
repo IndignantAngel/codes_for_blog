@@ -4,19 +4,6 @@
 #include <mutex>
 #include <condition_variable>
 
-template <typename SemaphoreT>
-struct is_platform_semaphore
-{
-	static constexpr bool value() noexcept
-	{
-		return false;
-	}
-};
-
-template <typename SemaT = void, 
-	bool = is_platform_semaphore<SemaT>::value()>
-class simple_semaphore;
-
 template <>
 class simple_semaphore<void, false>
 {
@@ -58,33 +45,4 @@ private:
 	uint32_t const				max_;
 };
 
-template <typename SemaT>
-class simple_semaphore<SemaT, true>
-{
-	using sema_type = SemaT;
-public:
-	~simple_semaphore() = default;
-	simple_semaphore(const simple_semaphore&) = delete;
-	simple_semaphore& operator=(simple_semaphore const&) = delete;
-	simple_semaphore(simple_semaphore&&) = default;
-	simple_semaphore& operator=(simple_semaphore&&) = default;
-
-	simple_semaphore(uint32_t max_count = 0)
-		: semaphore_(max_count)
-	{
-
-	}
-
-	void wait()
-	{
-		semaphore_.wait();
-	}
-
-	void signal(uint32_t count = 1)
-	{
-		semaphore_.signal(count);
-	}
-
-private:
-	sema_type semaphore_;
-};
+using semaphore = simple_semaphore<void>;
