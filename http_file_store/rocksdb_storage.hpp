@@ -148,7 +148,6 @@ namespace timax
 	struct queue_meta
 	{
 		std::atomic<uint32_t> begin;
-		std::atomic<uint32_t> end;
 	};
 
 	class queue_store
@@ -158,9 +157,10 @@ namespace timax
 		using column_family_handle_t = std::unique_ptr<rocksdb::ColumnFamilyHandle>;
 		using column_family_handles_t = std::vector<column_family_handle_t>;
 		using iterator_t = std::unique_ptr<rocksdb::Iterator>;
-		using queue_meta = std::map<std::string, queue_meta>;
-		using read_lock_t = std::shared_lock<std::shared_mutex>;
-		using write_lock_t = std::unique_lock<std::shared_mutex>;
+		using queue_meta = std::map<std::string, uint32_t>;
+		//using read_lock_t = std::shared_lock<std::shared_mutex>;
+		//using write_lock_t = std::unique_lock<std::shared_mutex>;
+		using lock_t = std::unique_lock<std::shared_mutex>;
 
 		// const
 	public:
@@ -182,8 +182,26 @@ namespace timax
 		void push_back(std::string const& topic, std::string const& value)
 		{
 			//auto key = gen_(topic, value);
-			auto itr = db_->NewIterator(rocksdb::ReadOptions{});
-			//itr->Seek()
+			lock_t lock{ mutex_ };
+			auto itr = meta_.end();
+			itr = meta_.find(topic);
+			if (meta_.end() == itr)
+				itr = meta_.emplace(topic, 0).first;
+		
+			uint32_t max_index = itr->second++;
+			lock.unlock();
+			
+			auto key = gen_(topic, max_index);
+
+			rocksdb::WriteBatch batch;
+			batch.Put(key, value);
+			batch.Put(topic_meta_handle_, topic, to_slice(max_index));
+
+			auto s = db_->Write(rocksdb::WriteOptions{}, &batch);
+			if (rocksdb::Status::OK() != s)
+			{
+				throw std::runtime_error{ s.getState() };
+			}
 		}
 
 	private:
@@ -300,8 +318,17 @@ namespace timax
 			while (itr->Valid())
 			{
 				std::string topic = itr->key().ToString();
-				//std::string value = 
+
+				auto value_on_rocks = itr->value();
+				uint32_t value;
+				::memcpy(&value, value_on_rocks.data(), sizeof(uint32_t));
+				meta_[topic] = value;
 			}
+		}
+
+		static rocksdb::Slice to_slice(uint32_t const& value)
+		{
+			return rocksdb::Slice{ reinterpret_cast<char const*>(&value), sizeof(uint32_t) };
 		}
 
 	private:
