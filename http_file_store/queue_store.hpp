@@ -109,7 +109,7 @@ namespace timax
 			rocksdb::EncodeFixed64(dst, value);
 		}
 
-		static constexpr uint32_t default_value() noexcept
+		static constexpr uint64_t default_value() noexcept
 		{
 			return 1u;
 		}
@@ -138,7 +138,7 @@ namespace timax
 			rocksdb::EncodeFixed32(dst, value);
 		}
 
-		static constexpr uint64_t default_value() noexcept
+		static constexpr uint32_t default_value() noexcept
 		{
 			return 1ull;
 		}
@@ -168,7 +168,7 @@ namespace timax
 			if (value.size() != sizeof(value_type))
 				return false;
 
-			value_type orig_value = rit::default_value;
+			value_type orig_value = rit::default_value();
 			if (existing_value) 
 			{
 				orig_value = rit::decode(existing_value->data());
@@ -235,7 +235,7 @@ namespace timax
 		template <typename DB>
 		static bool get(DB const& db,
 			rocksdb::ReadOptions const& option,
-			rocksdb::ColumnFamilyHandle const* handle,
+			rocksdb::ColumnFamilyHandle* handle,
 			std::string const& key,
 			value_type& value)
 		{
@@ -260,6 +260,17 @@ namespace timax
 			{
 				return false;
 			}
+		}
+
+		static bool put(rocksdb::Transaction* txn,
+			rocksdb::ColumnFamilyHandle* handle,
+			std::string const& key,
+			value_type value)
+		{
+			char value_str[sizeof(uint32_t)];
+			rocksdb::EncodeFixed32(value_str, value);
+			auto s = txn->Put(handle, key, rocksdb::Slice{ value_str, sizeof(value_str) });
+			return s.ok();
 		}
 
 		static bool get_for_update(rocksdb::Transaction* txn,
@@ -333,18 +344,49 @@ namespace timax
 		bool						dismiss_ = true;
 	};
 
+	struct rocksdb_snapshot_guard
+	{
+		rocksdb_snapshot_guard(rocksdb::DB* db, rocksdb::Snapshot const*	snapshot)
+			: db_(db)
+			, snapshot_(snapshot)
+		{
+			assert(db);
+			assert(snapshot);
+		}
+
+		~rocksdb_snapshot_guard()
+		{
+			if (snapshot_)
+			{
+				assert(db_);
+				db_->ReleaseSnapshot(snapshot_);
+				snapshot_ = nullptr;
+			}
+		}
+
+		rocksdb::DB*				db_ = nullptr;
+		rocksdb::Snapshot const*	snapshot_ = nullptr;
+	};
+
 	class queue_store
 	{
 		using value_type = uint32_t;
 		using counter_merge_operator = integral_merge_operator<value_type>;
 		using queue_counter_t = queue_counter<value_type>;
-		using column_family_handle_t = std::unique_ptr<rocksdb::ColumnFamilyHandle>;
-		using column_family_handles_t = std::vector<column_family_handle_t>;
+		using column_family_handles_t = std::vector<rocksdb::ColumnFamilyHandle*>;
 		
 	public:
 		explicit queue_store(std::string const& path)
 		{
 			init(path);
+		}
+
+		~queue_store()
+		{
+			if (db_)
+			{
+				
+			}
 		}
 
 		queue_store(queue_store const&) = delete;
@@ -363,7 +405,7 @@ namespace timax
 				return false;
 
 			// update index
-			if (!queue_counter_t::fetch_add(txn.get(), topic_meta_handle_, topic_tail, 1u))
+			if (!queue_counter_t::put(txn.get(), topic_meta_handle_, topic_tail, index + 1))
 				return false;
 
 			auto key = gen_(topic, index);
@@ -401,6 +443,7 @@ namespace timax
 			if (nullptr == snapshot)
 				return false;
 			
+			rocksdb_snapshot_guard snapshort_guard = { db_.get(), snapshot };
 			op.snapshot = snapshot;
 	
 			if (!queue_counter_t::get(db_, op, topic_meta_handle_, topic_head_key, head_index))
@@ -413,7 +456,7 @@ namespace timax
 			if (end > tail_index)
 				end = tail_index;
 
-			auto tail_key = gen_(topic, end + 1);
+			auto tail_key = gen_(topic, end);
 			auto head_key = gen_(topic, begin);
 
 			rocksdb::Slice upper_bound = tail_key;
@@ -466,7 +509,9 @@ namespace timax
 			if (is_to_create_topic_meta_column_family)
 			{
 				DB* db_raw = nullptr;
-				s = DB::Open(Options{}, path, &db_raw);
+				Options option;
+				option.create_if_missing = true;
+				s = DB::Open(option, path, &db_raw);
 				if (Status::OK() != s)
 				{
 					assert(nullptr == db_raw);
@@ -485,7 +530,7 @@ namespace timax
 				}
 
 				assert(handle_raw);
-				column_family_handle_t handle{ handle_raw };
+				db->DestroyColumnFamilyHandle(handle_raw);
 			}
 		}
 
@@ -513,9 +558,6 @@ namespace timax
 				topic_meta_column_family_name_, ColumnFamilyOptions{}));
 			std::vector<ColumnFamilyHandle*> raw_handles;
 
-			column_family_handles_t handles;
-			handles.reserve(column_families.size());
-
 			TransactionDB* db_raw = nullptr;
 			s = TransactionDB::Open(op, txn_op, path, column_families, &raw_handles, &db_raw);
 			if (Status::OK() != s)
@@ -527,25 +569,20 @@ namespace timax
 
 			// cache db and handles with raii for exceptional safty
 			transaction_db_t db{ db_raw };
-			for (auto raw_handle : raw_handles)
-			{
-				assert(raw_handle);
-				handles.emplace_back(raw_handle);
-			}
 
-			auto itr = std::find_if(handles.begin(), handles.end(),
+			auto itr = std::find_if(raw_handles.begin(), raw_handles.end(),
 				[this](auto const& handle)
 			{
 				return handle->GetName() == topic_meta_column_family_name_;
 			});
 
-			if (handles.end() == itr)
+			if (raw_handles.end() == itr)
 			{
 				throw std::runtime_error{ "Rocksdb status is not inconsistence." };
 			}
 
-			topic_meta_handle_ = itr->get();
-			handles_ = std::move(handles);
+			topic_meta_handle_ = *itr;
+			handles_ = std::move(raw_handles);
 			db_ = std::move(db);
 		}
 
@@ -556,4 +593,31 @@ namespace timax
 		column_family_handles_t		handles_;
 		rocksdb::ColumnFamilyHandle*	topic_meta_handle_ = nullptr;
 	};
+}
+
+int main()
+{
+	timax::queue_store queue_store("E:/buke/tmp/queu_store");
+
+	queue_store.push_back("test_topic", "{test1}");
+	queue_store.push_back("test_topic", "{test2}");
+	queue_store.push_back("test_topic", "{test3}");
+	queue_store.push_back("test_topic", "{test4}");
+
+
+	std::string messages;
+	messages.reserve(100);
+	queue_store.get_message("test_topic", 1, 5, messages);
+
+	std::string value;
+	value.clear();
+	queue_store.get_message("test_topic", 1, value);
+	value.clear();
+	queue_store.get_message("test_topic", 2, value);
+	value.clear();
+	queue_store.get_message("test_topic", 3, value);
+	value.clear();
+	queue_store.get_message("test_topic", 4, value);
+
+	return 0;
 }
