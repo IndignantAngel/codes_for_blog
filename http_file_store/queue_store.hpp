@@ -4,7 +4,6 @@
 #include <memory>
 #include <type_traits>
 #include <thread>
-#include <boost/uuid/uuid_io.hpp>
 #include <boost/uuid/name_generator.hpp>
 #include <boost/uuid/string_generator.hpp>
 #include <rocksdb/db.h>
@@ -385,7 +384,11 @@ namespace timax
 		{
 			if (db_)
 			{
-				
+				for(auto handle : handles_)
+				{
+					if (handle)
+						db_->DestroyColumnFamilyHandle(handle);
+				}
 			}
 		}
 
@@ -411,7 +414,7 @@ namespace timax
 			auto key = gen_(topic, index);
 			rocksdb::Status s;
 			// enqueue
-			s = txn->Put(key, value);
+			s = txn->Put(default_hanle_, key, value);
 			if (!s.ok())
 				return false;
 
@@ -427,7 +430,7 @@ namespace timax
 		bool get_message(std::string const& topic, value_type index, std::string& value)
 		{
 			auto key = gen_(topic, index);
-			auto s = db_->Get(rocksdb::ReadOptions{}, key, &value);
+			auto s = db_->Get(rocksdb::ReadOptions{}, default_hanle_,  key, &value);
 			return s.ok();
 		}
 
@@ -462,9 +465,11 @@ namespace timax
 			rocksdb::Slice upper_bound = tail_key;
 			op.iterate_upper_bound = &upper_bound;
 
-			auto itr = db_->NewIterator(op);
-			if (nullptr == itr)
+			auto itr_raw = db_->NewIterator(op, default_hanle_);
+			if (nullptr == itr_raw)
 				return false;
+
+			std::unique_ptr<rocksdb::Iterator> itr{ itr_raw };
 
 			value.push_back('[');
 			itr->Seek(head_key);
@@ -581,6 +586,7 @@ namespace timax
 				throw std::runtime_error{ "Rocksdb status is not inconsistence." };
 			}
 
+			default_hanle_ = raw_handles[0];
 			topic_meta_handle_ = *itr;
 			handles_ = std::move(raw_handles);
 			db_ = std::move(db);
@@ -592,10 +598,11 @@ namespace timax
 		std::string const				topic_meta_column_family_name_ = "topic_meta";
 		column_family_handles_t		handles_;
 		rocksdb::ColumnFamilyHandle*	topic_meta_handle_ = nullptr;
+		rocksdb::ColumnFamilyHandle*	default_hanle_ = nullptr;
 	};
 }
 
-int main()
+/*int main()
 {
 	timax::queue_store queue_store("E:/buke/tmp/queu_store");
 
@@ -603,12 +610,12 @@ int main()
 	queue_store.push_back("test_topic", "{test2}");
 	queue_store.push_back("test_topic", "{test3}");
 	queue_store.push_back("test_topic", "{test4}");
-
-
+	
+	
 	std::string messages;
 	messages.reserve(100);
 	queue_store.get_message("test_topic", 1, 5, messages);
-
+	
 	std::string value;
 	value.clear();
 	queue_store.get_message("test_topic", 1, value);
@@ -620,4 +627,4 @@ int main()
 	queue_store.get_message("test_topic", 4, value);
 
 	return 0;
-}
+}*/
