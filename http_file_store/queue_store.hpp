@@ -9,22 +9,61 @@
 #include <rocksdb/db.h>
 #include <rocksdb/slice.h>
 #include <rocksdb/options.h>
-#include <rocksdb/merge_operator.h>
+//#include <rocksdb/merge_operator.h>
 #include <rocksdb/utilities/transaction.h>
 #include <rocksdb/utilities/transaction_db.h>
 
-namespace rocksdb
-{
-	extern void EncodeFixed64(char* dst, uint64_t value);
-	extern void EncodeFixed32(char* dst, uint32_t value);
-	extern uint64_t DecodeFixed64(char const* ptr);
-	extern uint32_t DecodeFixed32(char const* ptr);
-	extern void PutFixed64(std::string* dst, uint64_t value);
-	extern void PutFixed32(std::string* dst, uint32_t value);
-}
-
 namespace timax
 {
+	inline void encode_fixed_32(char* dst, uint64_t value)
+	{
+		dst[0] = value & 0xff;
+		dst[1] = (value >> 8) & 0xff;
+		dst[2] = (value >> 16) & 0xff;
+		dst[3] = (value >> 24) & 0xff;
+	}
+
+	inline void encode_fixed_64(char* dst, uint64_t value)
+	{
+		dst[0] = value & 0xff;
+		dst[1] = (value >> 8) & 0xff;
+		dst[2] = (value >> 16) & 0xff;
+		dst[3] = (value >> 24) & 0xff;
+		dst[4] = (value >> 32) & 0xff;
+		dst[5] = (value >> 40) & 0xff;
+		dst[6] = (value >> 48) & 0xff;
+		dst[7] = (value >> 56) & 0xff;
+	}
+
+	inline uint32_t decode_fixed_32(char const* ptr)
+	{
+		return ((static_cast<uint32_t>(static_cast<unsigned char>(ptr[0])))
+			| (static_cast<uint32_t>(static_cast<unsigned char>(ptr[1])) << 8)
+			| (static_cast<uint32_t>(static_cast<unsigned char>(ptr[2])) << 16)
+			| (static_cast<uint32_t>(static_cast<unsigned char>(ptr[3])) << 24));
+	}
+
+	inline uint64_t decode_fixed_64(char const* ptr)
+	{
+		uint64_t const lo = decode_fixed_32(ptr);
+		uint64_t const hi = decode_fixed_32(ptr + 4);
+		return (hi << 32) | lo;
+	}
+
+	inline void put_fixed_32(std::string* dst, uint32_t value)
+	{
+		char buf[sizeof(value)];
+		encode_fixed_32(buf, value);
+		dst->append(buf, sizeof(buf));
+	}
+
+	inline void put_fixed_64(std::string* dst, uint64_t value)
+	{
+		char buf[sizeof(value)];
+		encode_fixed_64(buf, value);
+		dst->append(buf, sizeof(buf));
+	}
+
 	namespace detail
 	{
 		inline static uint32_t swap_endian(uint32_t value)
@@ -90,12 +129,12 @@ namespace timax
 	{
 		static void put(std::string* dst, uint64_t value)
 		{
-			return rocksdb::PutFixed64(dst, value);
+			put_fixed_64(dst, value);
 		}
 
 		static uint64_t decode(char const* ptr)
 		{
-			return rocksdb::DecodeFixed64(ptr);
+			return decode_fixed_64(ptr);
 		}
 
 		static char const* name() noexcept
@@ -105,7 +144,7 @@ namespace timax
 
 		static void encode(char* dst, uint64_t value) noexcept
 		{
-			rocksdb::EncodeFixed64(dst, value);
+			encode_fixed_64(dst, value);
 		}
 
 		static constexpr uint64_t default_value() noexcept
@@ -119,12 +158,12 @@ namespace timax
 	{
 		static void put(std::string* dst, uint32_t value)
 		{
-			rocksdb::PutFixed32(dst, value);
+			put_fixed_32(dst, value);
 		}
 
 		static uint32_t decode(char const* ptr)
 		{
-			return rocksdb::DecodeFixed32(ptr);
+			return decode_fixed_32(ptr);
 		}
 
 		static char const* name() noexcept
@@ -134,7 +173,7 @@ namespace timax
 
 		static void encode(char* dst, uint32_t value) noexcept
 		{
-			rocksdb::EncodeFixed32(dst, value);
+			encode_fixed_32(dst, value);
 		}
 
 		static constexpr uint32_t default_value() noexcept
@@ -144,7 +183,7 @@ namespace timax
 	};
 
 	/*rocksdb merge operator*/
-	template <typename T>
+	/*template <typename T>
 	class integral_merge_operator : public rocksdb::AssociativeMergeOperator
 	{
 		static_assert(std::is_integral<T>::value, "Type T is not integral!");
@@ -183,7 +222,7 @@ namespace timax
 		{
 			return rit::name();
 		}
-	};
+	};*/
 
 	using normal_db_t = std::unique_ptr<rocksdb::DB>;
 	using transaction_db_t = std::unique_ptr<rocksdb::TransactionDB>;
@@ -196,30 +235,7 @@ namespace timax
 		using rit = rocksdb_ingtegral_tratis<value_type>;
 
 	public:
-		//template <typename DB>
-		//static bool fetch_add(DB const& db, std::string const& key, uint32_t value)
-		//{
-		//	char encoded[sizeof(uint32_t)];
-		//	rocksdb::EncodeFixed64(encoded, value);
-		//	rocksdb::Slice slice(encoded, sizeof(uint32_t));
-		//	auto s = db->Merge(rocksdb::WriteOptions{}, key, slice);
-		//	return s.ok();
-		//}
-
-		//template <typename DB>
-		//static bool fetch_add(DB const& db,
-		//	rocksdb::ColumnFamilyHandle* handle,
-		//	std::string const& key,
-		//	uint32_t value)
-		//{
-		//	char encoded[sizeof(uint32_t)];
-		//	rocksdb::EncodeFixed64(encoded, value);
-		//	rocksdb::Slice slice(encoded, sizeof(uint32_t));
-		//	auto s = db->Merge(handle, key, slice);
-		//	return s.ok();
-		//}
-
-		static bool fetch_add(rocksdb::Transaction* txn,
+		/*static bool fetch_add(rocksdb::Transaction* txn,
 			rocksdb::ColumnFamilyHandle* handle,
 			std::string const& key,
 			value_type value)
@@ -229,7 +245,7 @@ namespace timax
 			rocksdb::Slice slice(encoded, sizeof(value_type));
 			auto s = txn->Merge(handle, key, slice);
 			return s.ok();
-		}
+		}*/
 
 		template <typename DB>
 		static bool get(DB const& db,
@@ -245,7 +261,8 @@ namespace timax
 				value = rit::default_value();
 				return true;
 			}
-			else if (s.ok())
+
+			if (s.ok())
 			{
 				if (str.size() != sizeof(value_type))
 				{
@@ -255,10 +272,8 @@ namespace timax
 				value = rit::decode(&str[0]);
 				return true;
 			}
-			else
-			{
-				return false;
-			}
+
+			return false;
 		}
 
 		static bool put(rocksdb::Transaction* txn,
@@ -267,7 +282,7 @@ namespace timax
 			value_type value)
 		{
 			char value_str[sizeof(uint32_t)];
-			rocksdb::EncodeFixed32(value_str, value);
+			encode_fixed_32(value_str, value);
 			auto s = txn->Put(handle, key, rocksdb::Slice{ value_str, sizeof(value_str) });
 			return s.ok();
 		}
@@ -284,7 +299,8 @@ namespace timax
 				value = rit::default_value();
 				return true;
 			}
-			else if (s.ok())
+			
+			if (s.ok())
 			{
 				if (str.size() != sizeof(value_type))
 				{
@@ -294,10 +310,8 @@ namespace timax
 				value = rit::decode(&str[0]);
 				return true;
 			}
-			else
-			{
-				return false;
-			}
+
+			return false;
 		}
 	};
 
@@ -370,7 +384,7 @@ namespace timax
 	class queue_store
 	{
 		using value_type = uint32_t;
-		using counter_merge_operator = integral_merge_operator<value_type>;
+		//using counter_merge_operator = integral_merge_operator<value_type>;
 		using queue_counter_t = queue_counter<value_type>;
 		using column_family_handles_t = std::vector<rocksdb::ColumnFamilyHandle*>;
 		
@@ -548,7 +562,7 @@ namespace timax
 			op.IncreaseParallelism(std::thread::hardware_concurrency());
 			op.OptimizeLevelStyleCompaction();
 			op.create_if_missing = true;
-			op.merge_operator = std::make_shared<counter_merge_operator>();
+			//op.merge_operator = std::make_shared<counter_merge_operator>();
 			op.max_successive_merges = 5;
 
 			TransactionDBOptions txn_op;
@@ -602,9 +616,11 @@ namespace timax
 	};
 }
 
-/*int main()
+/*#include <iostream>
+
+int main()
 {
-	timax::queue_store queue_store("E:/buke/tmp/queu_store");
+	timax::queue_store queue_store("/home/coding/temp/queue_store");
 
 	queue_store.push_back("test_topic", "{test1}");
 	queue_store.push_back("test_topic", "{test2}");
@@ -616,6 +632,8 @@ namespace timax
 	messages.reserve(100);
 	queue_store.get_message("test_topic", 1, 5, messages);
 	
+	std::cout << messages << std::endl;
+
 	std::string value;
 	value.clear();
 	queue_store.get_message("test_topic", 1, value);
